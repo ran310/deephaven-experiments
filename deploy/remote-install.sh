@@ -69,7 +69,12 @@ if [[ ! -d "${VENV}" ]]; then
   "${PY}" -m venv "${VENV}"
 fi
 "${VENV}/bin/pip" install --upgrade pip
-"${VENV}/bin/pip" install --no-cache-dir -r "${APP_DIR}/requirements.txt"
+# deephaven_server wheel is ~250MB; flaky PyPI reads show as "incomplete-download" without enough retries.
+"${VENV}/bin/pip" install --no-cache-dir \
+  --default-timeout=600 \
+  --retries=15 \
+  --resume-retries=25 \
+  -r "${APP_DIR}/requirements.txt"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   touch "$ENV_FILE"
