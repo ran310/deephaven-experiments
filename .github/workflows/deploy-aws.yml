@@ -1,0 +1,119 @@
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EC2_STACK_NAME: ${{ vars.AWS_EC2_STACK_NAME || 'AwsInfra-Ec2Nginx' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve stack outputs
+        id: stack
+        run: |
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "${EC2_STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='Ec2NginxArtifactBucketName'].OutputValue" \
+            --output text)
+          IID=$(aws cloudformation describe-stacks \
+            --stack-name "${EC2_STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='NginxInstanceId'].OutputValue" \
+            --output text)
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "instance_id=${IID}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend and release tarball
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          VITE_BASE=/deephaven-live/ npm run build
+          cd ..
+          tar -czf /tmp/deephaven-coinbase.tgz \
+            --exclude='./.git' \
+            --exclude='./frontend/node_modules' \
+            --exclude='./backend/.venv' \
+            .
+
+      - name: Upload tarball to S3
+        id: upload
+        env:
+          BUCKET: ${{ steps.stack.outputs.bucket }}
+        run: |
+          KEY="deephaven-coinbase/releases/${GITHUB_SHA}.tar.gz"
+          aws s3 cp /tmp/deephaven-coinbase.tgz "s3://${BUCKET}/${KEY}"
+          echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Install on EC2 via SSM
+        env:
+          BUCKET: ${{ steps.stack.outputs.bucket }}
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          S3_KEY: ${{ steps.upload.outputs.key }}
+        run: |
+          set -euo pipefail
+          B64=$(base64 -w0 deploy/remote-install.sh 2>/dev/null || base64 deploy/remote-install.sh | tr -d '\n')
+          PARAMS=$(jq -n \
+            --arg b64 "$B64" \
+            --arg b "$BUCKET" \
+            --arg k "$S3_KEY" \
+            '{commands: ["echo \($b64) | base64 -d | bash -s \($b) \($k)"]}')
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deephaven-coinbase deploy ${GITHUB_SHA}" \
+            --parameters "$PARAMS" \
+            --query 'Command.CommandId' \
+            --output text)
+          if [[ -z "$CMD_ID" || "$CMD_ID" == "None" ]]; then
+            echo "ssm send-command did not return a CommandId (check IAM and SSM agent on the instance)."
+            exit 1
+          fi
+          echo "Waiting for SSM command $CMD_ID..."
+          for _ in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query Status \
+              --output text 2>/dev/null || echo Pending)
+            if [[ "$STATUS" == Success ]]; then
+              aws ssm get-command-invocation \
+                --command-id "$CMD_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query StandardOutputContent \
+                --output text
+              exit 0
+            fi
+            if [[ "$STATUS" == Failed ]] || [[ "$STATUS" == Cancelled ]] || [[ "$STATUS" == TimedOut ]]; then
+              aws ssm get-command-invocation \
+                --command-id "$CMD_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --output json
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "SSM command did not finish in time"
+          exit 1
