@@ -2,7 +2,7 @@
 
 This mirrors **nfl-quiz**’s flow: **GitHub Actions** (OIDC → AWS) uploads a release tarball to the **S3 artifact bucket** from CloudFormation stack **`AwsInfra-Ec2Nginx`**, then **`deploy/remote-install.sh`** runs on the nginx EC2 instance via **Systems Manager (SSM)**.
 
-Public URL path for this app: **`/deephaven-live/`** (Gunicorn on **`127.0.0.1:8082`**, **one worker** because of the embedded Deephaven JVM).
+Public URL path for this app: **`/deephaven-experiments/`** (Gunicorn on **`127.0.0.1:8082`**, **one worker** because of the embedded Deephaven JVM). Must match **`AwsInfra-Ec2Nginx`** in aws-infra (`ec2-nginx-stack.ts`).
 
 ---
 
@@ -67,12 +67,12 @@ Redeploy the stack (or attach an inline policy), then re-run **Deploy to AWS**.
 `deploy/remote-install.sh` writes **`/etc/nginx/conf.d/<projectName>-apps.conf`** (default **`learn-aws`**, overridable with **`NFL_QUIZ_PROJECT_NAME`** on the instance) with **both**:
 
 - **`/nfl-quiz/`** → `127.0.0.1:8080` (nfl-quiz Gunicorn)
-- **`/deephaven-live/`** → `127.0.0.1:8082` (this app)
+- **`/deephaven-experiments/`** → `127.0.0.1:8082` (this app)
 
-**Important:** The **stock nfl-quiz** `remote-install.sh` **only** defines `/nfl-quiz/`. If you run **nfl-quiz’s** deploy **after** this one, it will **overwrite** nginx and **remove** `/deephaven-live/`. Mitigations:
+**Important:** The **stock nfl-quiz** `remote-install.sh` **only** defines `/nfl-quiz/`. If you run **nfl-quiz’s** deploy **after** this one, it will **overwrite** nginx and **remove** `/deephaven-experiments/`. Mitigations:
 
 1. Re-run **this repo’s** “Deploy to AWS” workflow after any nfl-quiz deploy, or  
-2. Update **nfl-quiz**’s nginx block to include the **`/deephaven-live/`** section (copy from this script), or  
+2. Update **nfl-quiz**’s nginx block to include the **`/deephaven-experiments/`** section (copy from this script), or  
 3. Keep a single “combined” install script in your **aws-infra** / ops repo.
 
 ---
@@ -90,7 +90,7 @@ BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" \
 IID=$(aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='NginxInstanceId'].OutputValue" --output text)
 
-cd frontend && npm ci && VITE_BASE=/deephaven-live/ npm run build && cd ..
+cd frontend && npm ci && VITE_BASE=/deephaven-experiments/ npm run build && cd ..
 tar -czf /tmp/deephaven-experiments.tgz --exclude='./.git' --exclude='./frontend/node_modules' --exclude='./backend/.venv' .
 KEY="deephaven-experiments/releases/local-$(git rev-parse HEAD).tar.gz"
 aws s3 cp /tmp/deephaven-experiments.tgz "s3://${BUCKET}/${KEY}"
@@ -119,7 +119,7 @@ aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
 
 ## URLs
 
-After deploy: **`http://<Elastic IP>/deephaven-live/`** (same host as nfl-quiz; stack output **`NflQuizUrl`** / **`NginxElasticIp`** depending on your CDK names).
+After deploy: **`http://<Elastic IP>/deephaven-experiments/`** (same host as nfl-quiz; stack outputs **`DeephavenExperimentsUrl`** / **`NginxElasticIp`** / **`NginxHttpsBaseUrl`** depending on your CDK setup).
 
 ---
 

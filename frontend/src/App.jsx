@@ -14,7 +14,7 @@ import {
 } from 'recharts'
 import './App.css'
 
-// Dev: proxy '' + /api. Prod: Vite BASE_URL is /deephaven-live/
+// Dev: proxy '' + /api. Prod: Vite BASE_URL is /deephaven-experiments/
 const API =
   import.meta.env.VITE_API_BASE ??
   import.meta.env.BASE_URL.replace(/\/$/, '')

@@ -11,7 +11,7 @@ VENV="/opt/${APP_NAME}/venv"
 TMP="/tmp/${APP_NAME}-install-$$"
 SERVICE_NAME="${APP_NAME}.service"
 ENV_FILE="/etc/${APP_NAME}.env"
-QUIZ_PATH="/deephaven-live"
+QUIZ_PATH="/deephaven-experiments"
 GUNICORN_PORT=8082
 # Align with aws-infra / nfl-quiz nginx snippet (see deploy/README.md).
 PROJECT_NAME="${NFL_QUIZ_PROJECT_NAME:-learn-aws}"
@@ -106,8 +106,8 @@ if ! grep -q '^DEEPHAVEN_PORT=' "$ENV_FILE" 2>/dev/null; then
   echo "DEEPHAVEN_PORT=10000" >> "$ENV_FILE"
 fi
 
-if [[ ! -f /etc/systemd/system/${SERVICE_NAME} ]]; then
-  cat >"/etc/systemd/system/${SERVICE_NAME}" <<UNIT
+# Always write so CDK bootstrap units (or script changes) stay in sync.
+cat >"/etc/systemd/system/${SERVICE_NAME}" <<UNIT
 [Unit]
 Description=Deephaven experiments (Gunicorn + embedded Deephaven)
 After=network.target
@@ -125,7 +125,6 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 UNIT
-fi
 
 mkdir -p /var/www/app1 /var/www/app2
 cat >"$NGINX_CONF" <<EOF
@@ -172,7 +171,7 @@ server {
     }
     location = / {
         default_type text/html;
-        return 200 "<html><body><h1>${PROJECT_NAME} nginx</h1><p><a href=\"/nfl-quiz/\">/nfl-quiz/</a> &middot; <a href=\"/deephaven-live/\">/deephaven-live/</a> &middot; <a href=\"/app1/\">/app1/</a> &middot; <a href=\"/app2/\">/app2/</a></p></body></html>";
+        return 200 "<html><body><h1>${PROJECT_NAME} nginx</h1><p><a href=\"/nfl-quiz/\">/nfl-quiz/</a> &middot; <a href=\"${QUIZ_PATH}/\">${QUIZ_PATH}/</a> &middot; <a href=\"/app1/\">/app1/</a> &middot; <a href=\"/app2/\">/app2/</a></p></body></html>";
     }
 }
 EOF
