@@ -68,6 +68,20 @@ fi
 if [[ ! -d "${VENV}" ]]; then
   "${PY}" -m venv "${VENV}"
 fi
+
+# Pip uses $TMPDIR for wheel download; default /tmp is often tmpfs (~½ RAM on AL2023) and fills on small
+# instances → [Errno 28] No space left on device. Use root volume instead.
+export TMPDIR="${TMPDIR:-/var/tmp}"
+mkdir -p "$TMPDIR"
+
+echo "Disk space before pip (need a few GiB free on / for Deephaven ~250MB wheel + venv):" >&2
+df -h / /tmp "${TMPDIR}" >&2 || df -h >&2
+avail_root_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+if [[ "${avail_root_kb:-0}" -lt 2097152 ]]; then
+  echo "ERROR: Less than 2 GiB free on /. Enlarge the EBS root volume, clean disk (dnf clean all, journalctl --vacuum-time=3d), or remove old venvs. See deploy/README.md." >&2
+  exit 1
+fi
+
 "${VENV}/bin/pip" install --upgrade pip
 # deephaven_server wheel is ~250MB; flaky PyPI reads show as "incomplete-download" without enough retries.
 "${VENV}/bin/pip" install --no-cache-dir \
