@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run on the EC2 nginx host (via SSM). Args: <s3-bucket> <s3-key>
-# Mirrors nfl-quiz deploy: installs under /opt, systemd + nginx, Java 17 for Deephaven.
+# Installs app under /opt, systemd unit, Java 17. Nginx vhost is aws-infra CDK only (ec2-nginx-stack.ts).
 set -euxo pipefail
 
 BUCKET="$1"
@@ -11,11 +11,7 @@ VENV="/opt/${APP_NAME}/venv"
 TMP="/tmp/${APP_NAME}-install-$$"
 SERVICE_NAME="${APP_NAME}.service"
 ENV_FILE="/etc/${APP_NAME}.env"
-QUIZ_PATH="/deephaven-experiments"
 GUNICORN_PORT=8082
-# Align with aws-infra / nfl-quiz nginx snippet (see deploy/README.md).
-PROJECT_NAME="${NFL_QUIZ_PROJECT_NAME:-learn-aws}"
-NGINX_CONF="/etc/nginx/conf.d/${PROJECT_NAME}-apps.conf"
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
@@ -125,58 +121,6 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 UNIT
-
-mkdir -p /var/www/app1 /var/www/app2
-cat >"$NGINX_CONF" <<EOF
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-
-    location = /nfl-quiz {
-        return 301 /nfl-quiz/;
-    }
-
-    location /nfl-quiz/ {
-        proxy_pass http://127.0.0.1:8080/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Prefix /nfl-quiz;
-    }
-
-    location = ${QUIZ_PATH} {
-        return 301 ${QUIZ_PATH}/;
-    }
-
-    location ${QUIZ_PATH}/ {
-        proxy_pass http://127.0.0.1:${GUNICORN_PORT}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Prefix ${QUIZ_PATH};
-    }
-
-    location /app1/ {
-        alias /var/www/app1/;
-        index index.html;
-    }
-    location /app2/ {
-        alias /var/www/app2/;
-        index index.html;
-    }
-    location = / {
-        default_type text/html;
-        return 200 "<html><body><h1>${PROJECT_NAME} nginx</h1><p><a href=\"/nfl-quiz/\">/nfl-quiz/</a> &middot; <a href=\"${QUIZ_PATH}/\">${QUIZ_PATH}/</a> &middot; <a href=\"/app1/\">/app1/</a> &middot; <a href=\"/app2/\">/app2/</a></p></body></html>";
-    }
-}
-EOF
-nginx -t
-systemctl reload nginx
 
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"

@@ -45,7 +45,7 @@ To call a remote API instead, set `VITE_API_BASE` (e.g. `http://127.0.0.1:8082`)
 
 CI uploads a tarball to the **same S3 bucket + EC2 instance** as nfl-quiz’s **`AwsInfra-Ec2Nginx`** stack. Production UI base path: **`/deephaven-experiments/`** (nginx → Gunicorn → Flask + embedded Deephaven).
 
-**Setup checklist:** see **[deploy/README.md](deploy/README.md)** (GitHub OIDC secret `AWS_ROLE_TO_ASSUME`, optional vars `AWS_REGION` / `AWS_EC2_STACK_NAME`, instance RAM/Java notes, nginx coexistence with nfl-quiz).
+**Setup checklist:** see **[deploy/README.md](deploy/README.md)** (GitHub OIDC secret `AWS_ROLE_TO_ASSUME`, optional vars `AWS_REGION` / `AWS_EC2_STACK_NAME`, instance RAM/Java notes; nginx vhost is **aws-infra** only).
 
 ## References
 

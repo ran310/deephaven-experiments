@@ -62,18 +62,9 @@ Redeploy the stack (or attach an inline policy), then re-run **Deploy to AWS**.
 
 ---
 
-## nginx and nfl-quiz on the same host
+## Nginx (single source of truth: aws-infra)
 
-`deploy/remote-install.sh` writes **`/etc/nginx/conf.d/<projectName>-apps.conf`** (default **`learn-aws`**, overridable with **`NFL_QUIZ_PROJECT_NAME`** on the instance) with **both**:
-
-- **`/nfl-quiz/`** → `127.0.0.1:8080` (nfl-quiz Gunicorn)
-- **`/deephaven-experiments/`** → `127.0.0.1:8082` (this app)
-
-**Important:** The **stock nfl-quiz** `remote-install.sh` **only** defines `/nfl-quiz/`. If you run **nfl-quiz’s** deploy **after** this one, it will **overwrite** nginx and **remove** `/deephaven-experiments/`. Mitigations:
-
-1. Re-run **this repo’s** “Deploy to AWS” workflow after any nfl-quiz deploy, or  
-2. Update **nfl-quiz**’s nginx block to include the **`/deephaven-experiments/`** section (copy from this script), or  
-3. Keep a single “combined” install script in your **aws-infra** / ops repo.
+The combined vhost (**`/nginx-health`**, **`/`** → 8081, **`/nfl-quiz/`**, **`/deephaven-experiments/`**, etc.) lives only in **`aws-experimentation/aws-infra`** (`ec2-nginx-stack.ts` user data). **`remote-install.sh` does not modify nginx.** Change routes by updating CDK and redeploying **`AwsInfra-Ec2Nginx`** (or replacing the instance so user data re-runs).
 
 ---
 
@@ -128,9 +119,9 @@ After deploy: **`http://<Elastic IP>/deephaven-experiments/`** (same host as nfl
 | Symptom | Check |
 |--------|--------|
 | 502 from nginx | `systemctl status deephaven-experiments`, `journalctl -u deephaven-experiments -f` (JVM OOM, missing `JAVA_HOME`, first boot still installing). |
-| 502 on `/nfl-quiz/` after this deploy | Ensure **nfl-quiz** is still installed and listening on **8080**: `systemctl status nfl-quiz`. |
+| 502 on `/nfl-quiz/` | Ensure **nfl-quiz** is installed and on **8080**: `systemctl status nfl-quiz`. Nginx for `/nfl-quiz/` is CDK-only. |
 | `pip` / Deephaven install slow | First SSM run can exceed a few minutes; increase wait loop in the workflow if needed. |
-| Wrong nginx `projectName` | On the instance, `export NFL_QUIZ_PROJECT_NAME=...` before running the install script once, or edit **`NGINX_CONF`** path in **`remote-install.sh`**. |
+| Wrong nginx `projectName` / missing `learn-aws-apps.conf` | Set CDK context **`projectName`** to match; redeploy **`AwsInfra-Ec2Nginx`**. Conf path is **`/etc/nginx/conf.d/<projectName>-apps.conf`**. |
 | **`aws s3 cp` → `403 Forbidden` / `HeadObject`** | **EC2 instance profile** cannot read `deephaven-experiments/releases/*` in the artifact bucket. Fix IAM on the instance role (see **EC2 instance profile must be allowed to read** above). Confirm with Session Manager: `aws sts get-caller-identity` then `aws s3api head-object --bucket … --key deephaven-experiments/releases/….tar.gz`. |
 | **`pip` → `incomplete-download` / `not enough bytes` on `deephaven_server-…whl`** | Transient **PyPI** connectivity from the instance (large ~250MB wheel). `remote-install.sh` uses long timeouts and extra resume retries; **re-run the deploy**. If it persists, use a larger instance / better egress, a **PyPI mirror**, or bake a **golden AMI** with the venv preinstalled. |
 | **`pip` → `[Errno 28] No space left on device`** | **Disk full.** The Deephaven wheel + venv needs **several GiB** free on the **root (EBS) volume**. Grow the root volume (e.g. **≥20–30 GiB** for this app), or free space (`dnf clean all`, `journalctl --vacuum-time=3d`, remove old trees under `/opt`). The install script sets **`TMPDIR=/var/tmp`** so large downloads do not use small **RAM-backed `/tmp`**. |
