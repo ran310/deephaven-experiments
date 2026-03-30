@@ -42,6 +42,17 @@ Use the **same trust + permissions model** as nfl-quiz’s **`deploy/README.md`*
 
 Restrict `ssm:SendCommand` with `iam:ResourceTag` / instance tags if you use that pattern in CDK.
 
+### EC2 instance profile must be allowed to **read** the tarball
+
+GitHub Actions and the EC2 host use **different** IAM principals. The workflow can upload to `s3://…/deephaven-experiments/releases/…` while **`aws s3 cp` on the instance returns `403 Forbidden` on `HeadObject`** if the **instance profile** only allows `nfl-quiz/releases/*` (or similar).
+
+In **aws-infra / CDK**, extend the nginx instance role (or bucket policy) so it includes at least:
+
+- `s3:GetObject` on `arn:aws:s3:::<artifact-bucket-name>/deephaven-experiments/*`
+- `s3:ListBucket` on `arn:aws:s3:::<artifact-bucket-name>` with a `prefix` condition for `deephaven-experiments/` if your policy uses prefix-scoped `ListBucket`
+
+Redeploy the stack (or attach an inline policy), then re-run **Deploy to AWS**.
+
 ---
 
 ## One-time: EC2 instance sizing & Java
@@ -120,3 +131,4 @@ After deploy: **`http://<Elastic IP>/deephaven-live/`** (same host as nfl-quiz; 
 | 502 on `/nfl-quiz/` after this deploy | Ensure **nfl-quiz** is still installed and listening on **8080**: `systemctl status nfl-quiz`. |
 | `pip` / Deephaven install slow | First SSM run can exceed a few minutes; increase wait loop in the workflow if needed. |
 | Wrong nginx `projectName` | On the instance, `export NFL_QUIZ_PROJECT_NAME=...` before running the install script once, or edit **`NGINX_CONF`** path in **`remote-install.sh`**. |
+| **`aws s3 cp` → `403 Forbidden` / `HeadObject`** | **EC2 instance profile** cannot read `deephaven-experiments/releases/*` in the artifact bucket. Fix IAM on the instance role (see **EC2 instance profile must be allowed to read** above). Confirm with Session Manager: `aws sts get-caller-identity` then `aws s3api head-object --bucket … --key deephaven-experiments/releases/….tar.gz`. |

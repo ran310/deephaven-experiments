@@ -45,7 +45,14 @@ else
 fi
 
 mkdir -p "$TMP"
-aws s3 cp "s3://${BUCKET}/${KEY}" "${TMP}/app.tgz"
+if ! aws s3 cp "s3://${BUCKET}/${KEY}" "${TMP}/app.tgz"; then
+  echo "" >&2
+  echo "S3 download failed (e.g. 403 Forbidden on HeadObject)." >&2
+  echo "The EC2 instance IAM role must allow s3:GetObject (and usually ListBucket for this prefix) on:" >&2
+  echo "  s3://${BUCKET}/${KEY}" >&2
+  echo "See deploy/README.md: EC2 instance profile must be allowed to read the tarball." >&2
+  exit 1
+fi
 mkdir -p "$APP_DIR"
 tar xzf "${TMP}/app.tgz" -C "$APP_DIR"
 
