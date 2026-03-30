@@ -52,7 +52,7 @@ jobs:
           npm ci
           VITE_BASE=/deephaven-live/ npm run build
           cd ..
-          tar -czf /tmp/deephaven-coinbase.tgz \
+          tar -czf /tmp/deephaven-experiments.tgz \
             --exclude='./.git' \
             --exclude='./frontend/node_modules' \
             --exclude='./backend/.venv' \
@@ -63,8 +63,8 @@ jobs:
         env:
           BUCKET: ${{ steps.stack.outputs.bucket }}
         run: |
-          KEY="deephaven-coinbase/releases/${GITHUB_SHA}.tar.gz"
-          aws s3 cp /tmp/deephaven-coinbase.tgz "s3://${BUCKET}/${KEY}"
+          KEY="deephaven-experiments/releases/${GITHUB_SHA}.tar.gz"
+          aws s3 cp /tmp/deephaven-experiments.tgz "s3://${BUCKET}/${KEY}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
       - name: Install on EC2 via SSM
@@ -83,7 +83,7 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "deephaven-coinbase deploy ${GITHUB_SHA}" \
+            --comment "deephaven-experiments deploy ${GITHUB_SHA}" \
             --parameters "$PARAMS" \
             --query 'Command.CommandId' \
             --output text)

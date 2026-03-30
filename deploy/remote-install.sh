@@ -5,7 +5,7 @@ set -euxo pipefail
 
 BUCKET="$1"
 KEY="$2"
-APP_NAME="deephaven-coinbase"
+APP_NAME="deephaven-experiments"
 APP_DIR="/opt/${APP_NAME}/app"
 VENV="/opt/${APP_NAME}/venv"
 TMP="/tmp/${APP_NAME}-install-$$"
@@ -83,7 +83,7 @@ fi
 if [[ ! -f /etc/systemd/system/${SERVICE_NAME} ]]; then
   cat >"/etc/systemd/system/${SERVICE_NAME}" <<UNIT
 [Unit]
-Description=Deephaven Coinbase demo (Gunicorn + embedded Deephaven)
+Description=Deephaven experiments (Gunicorn + embedded Deephaven)
 After=network.target
 
 [Service]

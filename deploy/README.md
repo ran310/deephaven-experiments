@@ -37,7 +37,7 @@ Use the **same trust + permissions model** as nfl-quiz’s **`deploy/README.md`*
 | Area | Access |
 |------|--------|
 | CloudFormation | `DescribeStacks` on `AwsInfra-Ec2Nginx` (or your `AWS_EC2_STACK_NAME`) |
-| S3 | `PutObject`, `GetObject`, `ListBucket` on the artifact bucket from output **`Ec2NginxArtifactBucketName`** (objects under `deephaven-coinbase/releases/` and `nfl-quiz/releases/`) |
+| S3 | `PutObject`, `GetObject`, `ListBucket` on the artifact bucket from output **`Ec2NginxArtifactBucketName`** (objects under `deephaven-experiments/releases/` and `nfl-quiz/releases/`) |
 | SSM | `SendCommand`, `GetCommandInvocation`, `ListCommandInvocations`, `DescribeInstanceInformation` on the nginx instance |
 
 Restrict `ssm:SendCommand` with `iam:ResourceTag` / instance tags if you use that pattern in CDK.
@@ -46,7 +46,7 @@ Restrict `ssm:SendCommand` with `iam:ResourceTag` / instance tags if you use tha
 
 ## One-time: EC2 instance sizing & Java
 
-- **Deephaven** needs **JDK 17+** and a fair amount of **RAM**. A **t3.small** often works but **`t3.medium` or larger** is safer for `-Xmx2g`. Adjust **`DEEPHAVEN_HEAP`** in **`/etc/deephaven-coinbase.env`** on the instance if needed.
+- **Deephaven** needs **JDK 17+** and a fair amount of **RAM**. A **t3.small** often works but **`t3.medium` or larger** is safer for `-Xmx2g`. Adjust **`DEEPHAVEN_HEAP`** in **`/etc/deephaven-experiments.env`** on the instance if needed.
 - The install script installs **`java-17-amazon-corretto-headless`** with **`dnf`** / **`yum`** when Java 17 is not already on the PATH.
 
 ---
@@ -80,9 +80,9 @@ IID=$(aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='NginxInstanceId'].OutputValue" --output text)
 
 cd frontend && npm ci && VITE_BASE=/deephaven-live/ npm run build && cd ..
-tar -czf /tmp/deephaven-coinbase.tgz --exclude='./.git' --exclude='./frontend/node_modules' --exclude='./backend/.venv' .
-KEY="deephaven-coinbase/releases/local-$(git rev-parse HEAD).tar.gz"
-aws s3 cp /tmp/deephaven-coinbase.tgz "s3://${BUCKET}/${KEY}"
+tar -czf /tmp/deephaven-experiments.tgz --exclude='./.git' --exclude='./frontend/node_modules' --exclude='./backend/.venv' .
+KEY="deephaven-experiments/releases/local-$(git rev-parse HEAD).tar.gz"
+aws s3 cp /tmp/deephaven-experiments.tgz "s3://${BUCKET}/${KEY}"
 
 B64=$(base64 -w0 deploy/remote-install.sh 2>/dev/null || base64 deploy/remote-install.sh | tr -d '\n')
 PARAMS=$(jq -n --arg b64 "$B64" --arg b "$BUCKET" --arg k "$KEY" '{commands: ["echo \($b64) | base64 -d | bash -s \($b) \($k)"]}')
@@ -99,9 +99,9 @@ Replace **`$IID`** with your instance id.
 
 ```bash
 aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
-  --parameters '{"commands":["systemctl stop deephaven-coinbase"]}'
+  --parameters '{"commands":["systemctl stop deephaven-experiments"]}'
 aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
-  --parameters '{"commands":["systemctl start deephaven-coinbase"]}'
+  --parameters '{"commands":["systemctl start deephaven-experiments"]}'
 ```
 
 ---
@@ -116,7 +116,7 @@ After deploy: **`http://<Elastic IP>/deephaven-live/`** (same host as nfl-quiz; 
 
 | Symptom | Check |
 |--------|--------|
-| 502 from nginx | `systemctl status deephaven-coinbase`, `journalctl -u deephaven-coinbase -f` (JVM OOM, missing `JAVA_HOME`, first boot still installing). |
+| 502 from nginx | `systemctl status deephaven-experiments`, `journalctl -u deephaven-experiments -f` (JVM OOM, missing `JAVA_HOME`, first boot still installing). |
 | 502 on `/nfl-quiz/` after this deploy | Ensure **nfl-quiz** is still installed and listening on **8080**: `systemctl status nfl-quiz`. |
 | `pip` / Deephaven install slow | First SSM run can exceed a few minutes; increase wait loop in the workflow if needed. |
 | Wrong nginx `projectName` | On the instance, `export NFL_QUIZ_PROJECT_NAME=...` before running the install script once, or edit **`NGINX_CONF`** path in **`remote-install.sh`**. |
