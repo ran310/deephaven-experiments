@@ -1,8 +1,8 @@
 """
 Flask API + embedded Deephaven.
 
-Run (from backend/):  python app.py
-
+Local dev: from repo root, `python -m backend.app` or `cd backend && python app.py`.
+Production: Gunicorn uses `backend.app:app` with cwd = repo root — backend modules use relative imports.
 Requires JDK 17+ and JAVA_HOME. If the JVM rejects default Deephaven GC flags,
 minimal JVM args are applied via jvm_config (see jvm_config.py).
 """
@@ -27,7 +27,10 @@ def _bootstrap_deephaven() -> None:
 
     from deephaven_server import Server
 
-    from jvm_config import minimal_default_jvm_args, user_jvm_args
+    try:
+        from .jvm_config import minimal_default_jvm_args, user_jvm_args
+    except ImportError:
+        from jvm_config import minimal_default_jvm_args, user_jvm_args
 
     port = int(os.environ.get("DEEPHAVEN_PORT", "10000"))
     heap = os.environ.get("DEEPHAVEN_HEAP", "-Xmx2g")
@@ -37,7 +40,10 @@ def _bootstrap_deephaven() -> None:
         default_jvm_args=minimal_default_jvm_args(),
     ).start()
 
-    from market_pipeline import MarketPipeline, start_event_loop_thread
+    try:
+        from .market_pipeline import MarketPipeline, start_event_loop_thread
+    except ImportError:
+        from market_pipeline import MarketPipeline, start_event_loop_thread
 
     products = os.environ.get("COINBASE_PRODUCTS", "BTC-USD,ETH-USD,SOL-USD").split(",")
     products = [p.strip() for p in products if p.strip()]
@@ -67,7 +73,10 @@ def create_app() -> Flask:
 
     @app.get("/api/tickers/recent")
     def recent():
-        from table_util import table_to_records
+        try:
+            from .table_util import table_to_records
+        except ImportError:
+            from table_util import table_to_records
 
         lim = int(os.environ.get("RECENT_TICKS_LIMIT", "500"))
         return jsonify({"ticks": table_to_records(_pipeline.ticker_ring, tail=lim)})
@@ -75,13 +84,19 @@ def create_app() -> Flask:
     @app.get("/api/tickers/window_stats")
     def window_stats():
         """Rolling-window aggregation per product (Deephaven agg_by on ring table)."""
-        from table_util import table_to_records
+        try:
+            from .table_util import table_to_records
+        except ImportError:
+            from table_util import table_to_records
 
         return jsonify({"rows": table_to_records(_pipeline.per_product_window, tail=32)})
 
     @app.get("/api/tickers/latest")
     def latest():
-        from table_util import table_to_records
+        try:
+            from .table_util import table_to_records
+        except ImportError:
+            from table_util import table_to_records
 
         return jsonify(
             {"rows": table_to_records(_pipeline.latest_by_product, tail=32)}
@@ -89,7 +104,10 @@ def create_app() -> Flask:
 
     @app.get("/api/tickers/spread")
     def spread():
-        from table_util import table_to_records
+        try:
+            from .table_util import table_to_records
+        except ImportError:
+            from table_util import table_to_records
 
         return jsonify({"rows": table_to_records(_pipeline.spread_table, tail=32)})
 

@@ -118,7 +118,7 @@ After deploy: **`http://<Elastic IP>/deephaven-experiments/`** (same host as nfl
 
 | Symptom | Check |
 |--------|--------|
-| 502 from nginx | `systemctl status deephaven-experiments`, `journalctl -u deephaven-experiments -f` (JVM OOM, missing `JAVA_HOME`, first boot still installing). |
+| 502 from nginx | Use the exact path **`/deephaven-experiments/`** (spelling **experiments**, not *experiements*). On the host: `systemctl status deephaven-experiments`, `sudo curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/api/health`. Stale **`DEEPHAVEN_HEAP=-Xmx256m`** in **`/etc/deephaven-experiments.env`** causes JVM OOM—redeploy this repo (install resets heap to **`-Xmx4g`**) or edit the file and **`systemctl restart deephaven-experiments`**. Logs: `journalctl -u deephaven-experiments -n 80 --no-pager`. |
 | 502 on `/nfl-quiz/` | Ensure **nfl-quiz** is installed and on **8080**: `systemctl status nfl-quiz`. Nginx for `/nfl-quiz/` is CDK-only. |
 | `pip` / Deephaven install slow | First SSM run can exceed a few minutes; increase wait loop in the workflow if needed. |
 | Wrong nginx `projectName` / missing `learn-aws-apps.conf` | Set CDK context **`projectName`** to match; redeploy **`AwsInfra-Ec2Nginx`**. Conf path is **`/etc/nginx/conf.d/<projectName>-apps.conf`**. |
