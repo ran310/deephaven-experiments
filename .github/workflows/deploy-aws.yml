@@ -48,14 +48,14 @@ jobs:
             --output text)
           DG=$(aws cloudformation describe-stacks \
             --stack-name "${EC2_STACK_NAME}" \
-            --query "Stacks[0].Outputs[?OutputKey=='CodeDeployDeploymentGroupName'].OutputValue" \
+            --query "Stacks[0].Outputs[?OutputKey=='CodeDeployDeploymentGroupNameDeephavenExperiments'].OutputValue" \
             --output text)
           if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
             echo "::error::Missing Ec2NginxArtifactBucketName on stack ${EC2_STACK_NAME}"
             exit 1
           fi
           if [[ -z "$APP" || "$APP" == "None" || -z "$DG" || "$DG" == "None" ]]; then
-            echo "::error::Missing CodeDeploy outputs (CodeDeployAppName / CodeDeployDeploymentGroupName)."
+            echo "::error::Missing CodeDeploy outputs (CodeDeployAppName / CodeDeployDeploymentGroupNameDeephavenExperiments)."
             exit 1
           fi
           echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"

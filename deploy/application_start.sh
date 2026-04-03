@@ -12,6 +12,7 @@ cat >"/etc/systemd/system/${SERVICE_NAME}" <<UNIT
 [Unit]
 Description=Deephaven experiments (Gunicorn + embedded Deephaven)
 After=network.target
+ConditionPathExists=${VENV}/bin/gunicorn
 
 [Service]
 Type=simple
@@ -21,7 +22,6 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=${VENV}/bin/gunicorn --bind 127.0.0.1:${GUNICORN_PORT} --workers 1 --threads 4 --timeout 180 backend.app:app
 Restart=on-failure
 RestartSec=10
-ConditionPathExists=${VENV}/bin/gunicorn
 
 [Install]
 WantedBy=multi-user.target
