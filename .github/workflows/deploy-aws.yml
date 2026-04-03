@@ -14,7 +14,8 @@ env:
   EC2_STACK_NAME: ${{ vars.AWS_EC2_STACK_NAME || 'AwsInfra-Ec2Nginx' }}
 
 # OIDC role needs: cloudformation:DescribeStacks; s3:PutObject on artifact bucket;
-# codedeploy:CreateDeployment, RegisterApplicationRevision, GetDeployment, GetDeploymentConfig, GetApplicationRevision.
+# codedeploy:ListDeployments (wait-until-idle), CreateDeployment, RegisterApplicationRevision,
+# GetDeployment, GetDeploymentConfig, GetApplicationRevision.
 
 jobs:
   deploy:
@@ -94,20 +95,27 @@ jobs:
           set -euo pipefail
           deadline=$((SECONDS + 3600))
           while (( SECONDS < deadline )); do
-            n=$(aws deploy list-deployments \
+            if ! ids=$(aws deploy list-deployments \
               --application-name "${APP}" \
               --deployment-group-name "${DG}" \
               --include-only-statuses Created Queued InProgress Ready \
-              --query 'length(deployments)' \
-              --output text 2>/dev/null || echo 1)
-            if [[ "${n:-0}" == "0" ]]; then
+              --query 'deployments' \
+              --output text 2>cd-list.err); then
+              echo "list-deployments failed (see stderr). Add codedeploy:ListDeployments to OIDC role; cdk deploy AwsInfra-GitHubOidc."
+              sed 's/^/  /' cd-list.err >&2 || true
+              sleep 20
+              continue
+            fi
+            rm -f cd-list.err
+            if [[ -z "${ids}" || "${ids}" == "None" ]]; then
               echo "CodeDeploy deployment group is idle."
               exit 0
             fi
-            echo "Another deployment is active (count=${n}); waiting 20s…"
+            echo "Active deployment ID(s): ${ids} — waiting 20s…"
             sleep 20
           done
-          echo "Timed out after 1h waiting for CodeDeploy to become idle." >&2
+          echo "Timed out after 1h. A deployment may be stuck — check CodeDeploy console or:" >&2
+          echo "  aws deploy get-deployment --deployment-id <id-from-log-above>" >&2
           exit 1
 
       - name: Create CodeDeploy deployment
@@ -118,13 +126,31 @@ jobs:
           APP:    ${{ steps.stack.outputs.app }}
           DG:     ${{ steps.stack.outputs.dg }}
         run: |
-          DEPLOYMENT_ID=$(aws deploy create-deployment \
-            --application-name "${APP}" \
-            --deployment-group-name "${DG}" \
-            --s3-location "bucket=${BUCKET},key=${S3_KEY},bundleType=zip" \
-            --description "deephaven-experiments sha=${GITHUB_SHA} ref=${GITHUB_REF_NAME}" \
-            --query 'deploymentId' \
-            --output text)
+          set -euo pipefail
+          DEPLOYMENT_ID=""
+          for attempt in $(seq 1 30); do
+            if DEPLOYMENT_ID=$(aws deploy create-deployment \
+              --application-name "${APP}" \
+              --deployment-group-name "${DG}" \
+              --s3-location "bucket=${BUCKET},key=${S3_KEY},bundleType=zip" \
+              --description "deephaven-experiments sha=${GITHUB_SHA} ref=${GITHUB_REF_NAME}" \
+              --query 'deploymentId' \
+              --output text 2>cd.err); then
+              rm -f cd.err
+              break
+            fi
+            if grep -qF 'DeploymentLimitExceeded' cd.err 2>/dev/null; then
+              echo "DeploymentLimitExceeded (race with another workflow); retry ${attempt}/30 in 25s…"
+              sleep 25
+              continue
+            fi
+            cat cd.err >&2
+            exit 1
+          done
+          if [[ -z "${DEPLOYMENT_ID}" || "${DEPLOYMENT_ID}" == "None" ]]; then
+            echo "Failed to create deployment after retries." >&2
+            exit 1
+          fi
           echo "deployment_id=${DEPLOYMENT_ID}" >> "$GITHUB_OUTPUT"
           echo "Created deployment: ${DEPLOYMENT_ID}"
 
