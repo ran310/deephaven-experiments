@@ -13,6 +13,9 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   EC2_STACK_NAME: ${{ vars.AWS_EC2_STACK_NAME || 'AwsInfra-Ec2Nginx' }}
 
+# OIDC role needs: cloudformation:DescribeStacks; s3:PutObject on artifact bucket;
+# codedeploy:CreateDeployment, RegisterApplicationRevision, GetDeployment, GetDeploymentConfig, GetApplicationRevision.
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -38,82 +41,74 @@ jobs:
             --stack-name "${EC2_STACK_NAME}" \
             --query "Stacks[0].Outputs[?OutputKey=='Ec2NginxArtifactBucketName'].OutputValue" \
             --output text)
-          IID=$(aws cloudformation describe-stacks \
+          APP=$(aws cloudformation describe-stacks \
             --stack-name "${EC2_STACK_NAME}" \
-            --query "Stacks[0].Outputs[?OutputKey=='NginxInstanceId'].OutputValue" \
+            --query "Stacks[0].Outputs[?OutputKey=='CodeDeployAppName'].OutputValue" \
             --output text)
+          DG=$(aws cloudformation describe-stacks \
+            --stack-name "${EC2_STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='CodeDeployDeploymentGroupName'].OutputValue" \
+            --output text)
+          if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
+            echo "::error::Missing Ec2NginxArtifactBucketName on stack ${EC2_STACK_NAME}"
+            exit 1
+          fi
+          if [[ -z "$APP" || "$APP" == "None" || -z "$DG" || "$DG" == "None" ]]; then
+            echo "::error::Missing CodeDeploy outputs (CodeDeployAppName / CodeDeployDeploymentGroupName)."
+            exit 1
+          fi
           echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
-          echo "instance_id=${IID}" >> "$GITHUB_OUTPUT"
+          echo "app=${APP}"       >> "$GITHUB_OUTPUT"
+          echo "dg=${DG}"         >> "$GITHUB_OUTPUT"
 
-      - name: Build frontend and release tarball
+      - name: Build frontend and deployment bundle (zip)
         run: |
           set -euo pipefail
           cd frontend
           npm ci
           VITE_BASE=/deephaven-experiments/ npm run build
           cd ..
-          tar -czf /tmp/deephaven-experiments.tgz \
-            --exclude='./.git' \
-            --exclude='./frontend/node_modules' \
-            --exclude='./backend/.venv' \
-            .
+          zip -r /tmp/deephaven-experiments.zip . \
+            -x '*/.git/*' \
+            -x '.git/*' \
+            -x 'frontend/node_modules/*' \
+            -x 'backend/.venv/*' \
+            -x '*.pyc' \
+            -x '*__pycache__/*'
+          echo "Bundle size: $(du -sh /tmp/deephaven-experiments.zip | cut -f1)"
 
-      - name: Upload tarball to S3
+      - name: Upload bundle to S3
         id: upload
         env:
           BUCKET: ${{ steps.stack.outputs.bucket }}
         run: |
-          KEY="deephaven-experiments/releases/${GITHUB_SHA}.tar.gz"
-          aws s3 cp /tmp/deephaven-experiments.tgz "s3://${BUCKET}/${KEY}"
+          KEY="deephaven-experiments/releases/${GITHUB_SHA}.zip"
+          aws s3 cp /tmp/deephaven-experiments.zip "s3://${BUCKET}/${KEY}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Install on EC2 via SSM
+      - name: Create CodeDeploy deployment
+        id: deploy
         env:
           BUCKET: ${{ steps.stack.outputs.bucket }}
-          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
           S3_KEY: ${{ steps.upload.outputs.key }}
+          APP:    ${{ steps.stack.outputs.app }}
+          DG:     ${{ steps.stack.outputs.dg }}
         run: |
-          set -euo pipefail
-          B64=$(base64 -w0 deploy/remote-install.sh 2>/dev/null || base64 deploy/remote-install.sh | tr -d '\n')
-          PARAMS=$(jq -n \
-            --arg b64 "$B64" \
-            --arg b "$BUCKET" \
-            --arg k "$S3_KEY" \
-            '{commands: ["echo \($b64) | base64 -d | bash -s \($b) \($k)"]}')
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name AWS-RunShellScript \
-            --comment "deephaven-experiments deploy ${GITHUB_SHA}" \
-            --parameters "$PARAMS" \
-            --query 'Command.CommandId' \
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name "${APP}" \
+            --deployment-group-name "${DG}" \
+            --s3-location "bucket=${BUCKET},key=${S3_KEY},bundleType=zip" \
+            --description "deephaven-experiments sha=${GITHUB_SHA} ref=${GITHUB_REF_NAME}" \
+            --query 'deploymentId' \
             --output text)
-          if [[ -z "$CMD_ID" || "$CMD_ID" == "None" ]]; then
-            echo "ssm send-command did not return a CommandId (check IAM and SSM agent on the instance)."
-            exit 1
-          fi
-          echo "Waiting for SSM command $CMD_ID..."
-          for _ in $(seq 1 120); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$CMD_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --query Status \
-              --output text 2>/dev/null || echo Pending)
-            if [[ "$STATUS" == Success ]]; then
-              aws ssm get-command-invocation \
-                --command-id "$CMD_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --query StandardOutputContent \
-                --output text
-              exit 0
-            fi
-            if [[ "$STATUS" == Failed ]] || [[ "$STATUS" == Cancelled ]] || [[ "$STATUS" == TimedOut ]]; then
-              aws ssm get-command-invocation \
-                --command-id "$CMD_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --output json
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "SSM command did not finish in time"
-          exit 1
+          echo "deployment_id=${DEPLOYMENT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Created deployment: ${DEPLOYMENT_ID}"
+
+      - name: Wait for deployment to succeed
+        env:
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        run: |
+          echo "Waiting for ${DEPLOYMENT_ID}…"
+          aws deploy wait deployment-successful \
+            --deployment-id "${DEPLOYMENT_ID}"
+          echo "Deployment succeeded!"

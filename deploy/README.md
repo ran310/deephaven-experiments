@@ -1,6 +1,6 @@
-# AWS deployment (EC2 + nginx + SSM), same pattern as nfl-quiz
+# AWS deployment (EC2 + nginx + CodeDeploy), same pattern as nfl-quiz
 
-This mirrors **nfl-quiz**’s flow: **GitHub Actions** (OIDC → AWS) uploads a release tarball to the **S3 artifact bucket** from CloudFormation stack **`AwsInfra-Ec2Nginx`**, then **`deploy/remote-install.sh`** runs on the nginx EC2 instance via **Systems Manager (SSM)**.
+This mirrors **nfl-quiz**’s flow: **GitHub Actions** (OIDC → AWS) uploads a release **zip** to the **S3 artifact bucket** from CloudFormation stack **`AwsInfra-Ec2Nginx`**, then **AWS CodeDeploy** runs **`appspec.yml`** lifecycle hooks (**`deploy/*.sh`**) on the nginx EC2 instance.
 
 Public URL path for this app: **`/deephaven-experiments/`** (Gunicorn on **`127.0.0.1:8082`**, **one worker** because of the embedded Deephaven JVM). Must match **`AwsInfra-Ec2Nginx`** in aws-infra (`ec2-nginx-stack.ts`).
 
@@ -37,21 +37,12 @@ Use the **same trust + permissions model** as nfl-quiz’s **`deploy/README.md`*
 | Area | Access |
 |------|--------|
 | CloudFormation | `DescribeStacks` on `AwsInfra-Ec2Nginx` (or your `AWS_EC2_STACK_NAME`) |
-| S3 | `PutObject`, `GetObject`, `ListBucket` on the artifact bucket from output **`Ec2NginxArtifactBucketName`** (objects under `deephaven-experiments/releases/` and `nfl-quiz/releases/`) |
-| SSM | `SendCommand`, `GetCommandInvocation`, `ListCommandInvocations`, `DescribeInstanceInformation` on the nginx instance |
+| S3 | `PutObject`, `GetObject`, `ListBucket` on the artifact bucket from output **`Ec2NginxArtifactBucketName`** (objects under app prefixes such as `deephaven-experiments/releases/`) |
+| CodeDeploy (GitHub role) | `CreateDeployment`, `RegisterApplicationRevision`, `GetDeployment`, `GetDeploymentConfig`, `GetApplicationRevision` for outputs **`CodeDeployAppName`** / **`CodeDeployDeploymentGroupName`** |
 
-Restrict `ssm:SendCommand` with `iam:ResourceTag` / instance tags if you use that pattern in CDK.
+### EC2 instance profile must be allowed to **read** deployment artifacts
 
-### EC2 instance profile must be allowed to **read** the tarball
-
-GitHub Actions and the EC2 host use **different** IAM principals. The workflow can upload to `s3://…/deephaven-experiments/releases/…` while **`aws s3 cp` on the instance returns `403 Forbidden` on `HeadObject`** if the **instance profile** only allows `nfl-quiz/releases/*` (or similar).
-
-In **aws-infra / CDK**, extend the nginx instance role (or bucket policy) so it includes at least:
-
-- `s3:GetObject` on `arn:aws:s3:::<artifact-bucket-name>/deephaven-experiments/*`
-- `s3:ListBucket` on `arn:aws:s3:::<artifact-bucket-name>` with a `prefix` condition for `deephaven-experiments/` if your policy uses prefix-scoped `ListBucket`
-
-Redeploy the stack (or attach an inline policy), then re-run **Deploy to AWS**.
+CodeDeploy pulls the revision from S3 using the **instance role**. Ensure **aws-infra** grants **`s3:GetObject`** (and **`ListBucket`** if required by your bucket policy) for the artifact bucket keys under **`deephaven-experiments/releases/*`** (and the shared CodeDeploy bucket prefix if applicable).
 
 ---
 
@@ -68,43 +59,40 @@ The combined vhost (**`/nginx-health`**, **`/`** → 8081, **`/nfl-quiz/`**, **`
 
 ---
 
-## Manual / local deploy (AWS CLI + SSM)
+## Manual / local deploy (AWS CLI + CodeDeploy)
 
-Same idea as nfl-quiz (from repo root, with AWS credentials):
+From repo root (with AWS credentials), mirror CI:
 
 ```bash
-chmod +x deploy/remote-install.sh
 export AWS_REGION=us-east-1
 STACK="${AWS_EC2_STACK_NAME:-AwsInfra-Ec2Nginx}"
 BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='Ec2NginxArtifactBucketName'].OutputValue" --output text)
-IID=$(aws cloudformation describe-stacks --stack-name "$STACK" \
-  --query "Stacks[0].Outputs[?OutputKey=='NginxInstanceId'].OutputValue" --output text)
+APP=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='CodeDeployAppName'].OutputValue" --output text)
+DG=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='CodeDeployDeploymentGroupName'].OutputValue" --output text)
 
 cd frontend && npm ci && VITE_BASE=/deephaven-experiments/ npm run build && cd ..
-tar -czf /tmp/deephaven-experiments.tgz --exclude='./.git' --exclude='./frontend/node_modules' --exclude='./backend/.venv' .
-KEY="deephaven-experiments/releases/local-$(git rev-parse HEAD).tar.gz"
-aws s3 cp /tmp/deephaven-experiments.tgz "s3://${BUCKET}/${KEY}"
-
-B64=$(base64 -w0 deploy/remote-install.sh 2>/dev/null || base64 deploy/remote-install.sh | tr -d '\n')
-PARAMS=$(jq -n --arg b64 "$B64" --arg b "$BUCKET" --arg k "$KEY" '{commands: ["echo \($b64) | base64 -d | bash -s \($b) \($k)"]}')
-aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript --parameters "$PARAMS"
+zip -r /tmp/deephaven-experiments.zip . \
+  -x '*/.git/*' -x '.git/*' -x 'frontend/node_modules/*' -x 'backend/.venv/*' -x '*.pyc' -x '*__pycache__/*'
+KEY="deephaven-experiments/releases/local-$(git rev-parse HEAD).zip"
+aws s3 cp /tmp/deephaven-experiments.zip "s3://${BUCKET}/${KEY}"
+DEPLOYMENT_ID=$(aws deploy create-deployment --application-name "$APP" --deployment-group-name "$DG" \
+  --s3-location "bucket=${BUCKET},key=${KEY},bundleType=zip" --query deploymentId --output text)
+aws deploy wait deployment-successful --deployment-id "$DEPLOYMENT_ID"
 ```
-
-Then poll **`get-command-invocation`** for success (or use the GitHub Action logs).
 
 ---
 
-## Service commands (SSM)
-
-Replace **`$IID`** with your instance id.
+## Service commands (on the instance)
 
 ```bash
-aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
-  --parameters '{"commands":["systemctl stop deephaven-experiments"]}'
-aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
-  --parameters '{"commands":["systemctl start deephaven-experiments"]}'
+sudo systemctl stop deephaven-experiments
+sudo systemctl start deephaven-experiments
 ```
+
+Or use **Session Manager** and run the same commands in a shell.
 
 ---
 
@@ -120,8 +108,8 @@ After deploy: **`http://<Elastic IP>/deephaven-experiments/`** (same host as nfl
 |--------|--------|
 | 502 from nginx | Use the exact path **`/deephaven-experiments/`** (spelling **experiments**, not *experiements*). On the host: `systemctl status deephaven-experiments`, `sudo curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/api/health`. Stale **`DEEPHAVEN_HEAP=-Xmx256m`** in **`/etc/deephaven-experiments.env`** causes JVM OOM—redeploy this repo (install resets heap to **`-Xmx4g`**) or edit the file and **`systemctl restart deephaven-experiments`**. Logs: `journalctl -u deephaven-experiments -n 80 --no-pager`. |
 | 502 on `/nfl-quiz/` | Ensure **nfl-quiz** is installed and on **8080**: `systemctl status nfl-quiz`. Nginx for `/nfl-quiz/` is CDK-only. |
-| `pip` / Deephaven install slow | First SSM run can exceed a few minutes; increase wait loop in the workflow if needed. |
+| `pip` / Deephaven install slow | **AfterInstall** allows **900s**; first deploy can take many minutes. |
 | Wrong nginx `projectName` / missing `learn-aws-apps.conf` | Set CDK context **`projectName`** to match; redeploy **`AwsInfra-Ec2Nginx`**. Conf path is **`/etc/nginx/conf.d/<projectName>-apps.conf`**. |
-| **`aws s3 cp` → `403 Forbidden` / `HeadObject`** | **EC2 instance profile** cannot read `deephaven-experiments/releases/*` in the artifact bucket. Fix IAM on the instance role (see **EC2 instance profile must be allowed to read** above). Confirm with Session Manager: `aws sts get-caller-identity` then `aws s3api head-object --bucket … --key deephaven-experiments/releases/….tar.gz`. |
-| **`pip` → `incomplete-download` / `not enough bytes` on `deephaven_server-…whl`** | Transient **PyPI** connectivity from the instance (large ~250MB wheel). `remote-install.sh` uses long timeouts and extra resume retries; **re-run the deploy**. If it persists, use a larger instance / better egress, a **PyPI mirror**, or bake a **golden AMI** with the venv preinstalled. |
-| **`pip` → `[Errno 28] No space left on device`** | **Disk full.** The Deephaven wheel + venv needs **several GiB** free on the **root (EBS) volume**. Grow the root volume (e.g. **≥20–30 GiB** for this app), or free space (`dnf clean all`, `journalctl --vacuum-time=3d`, remove old trees under `/opt`). The install script sets **`TMPDIR=/var/tmp`** so large downloads do not use small **RAM-backed `/tmp`**. |
+| **`403` / failed revision download on the instance** | **EC2 instance role** must allow **S3 read** on your revision key (**`deephaven-experiments/releases/*.zip`**). Fix IAM in **aws-infra** and redeploy. |
+| **`pip` → `incomplete-download` / `not enough bytes` on `deephaven_server-…whl`** | Transient **PyPI** connectivity from the instance (large ~250MB wheel). **`deploy/after_install.sh`** uses long timeouts and extra resume retries; **re-run the deploy**. If it persists, use a larger instance / better egress, a **PyPI mirror**, or bake a **golden AMI** with the venv preinstalled. |
+| **`pip` → `[Errno 28] No space left on device`** | **Disk full.** The Deephaven wheel + venv needs **several GiB** free on the **root (EBS) volume**. Grow the root volume (e.g. **≥20–30 GiB** for this app), or free space (`dnf clean all`, `journalctl --vacuum-time=3d`, remove old trees under `/opt`). **`after_install.sh`** sets **`TMPDIR=/var/tmp`** so large downloads do not use small **RAM-backed `/tmp`**. |

@@ -1,0 +1,28 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /opt/deephaven-experiments/app
+    overwrite: true
+permissions:
+  - object: /opt/deephaven-experiments/app/deploy
+    mode: "0755"
+    type:
+      - file
+hooks:
+  ApplicationStop:
+    - location: deploy/application_stop.sh
+      timeout: 60
+      runas: root
+  BeforeInstall:
+    - location: deploy/before_install.sh
+      timeout: 120
+      runas: root
+  AfterInstall:
+    - location: deploy/after_install.sh
+      timeout: 900
+      runas: root
+  ApplicationStart:
+    - location: deploy/application_start.sh
+      timeout: 120
+      runas: root
