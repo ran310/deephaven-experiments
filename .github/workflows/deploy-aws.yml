@@ -86,6 +86,30 @@ jobs:
           aws s3 cp /tmp/deephaven-experiments.zip "s3://${BUCKET}/${KEY}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
+      - name: Wait until CodeDeploy deployment group is idle
+        env:
+          APP: ${{ steps.stack.outputs.app }}
+          DG: ${{ steps.stack.outputs.dg }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 3600))
+          while (( SECONDS < deadline )); do
+            n=$(aws deploy list-deployments \
+              --application-name "${APP}" \
+              --deployment-group-name "${DG}" \
+              --include-only-statuses Created Queued InProgress Ready \
+              --query 'length(deployments)' \
+              --output text 2>/dev/null || echo 1)
+            if [[ "${n:-0}" == "0" ]]; then
+              echo "CodeDeploy deployment group is idle."
+              exit 0
+            fi
+            echo "Another deployment is active (count=${n}); waiting 20s…"
+            sleep 20
+          done
+          echo "Timed out after 1h waiting for CodeDeploy to become idle." >&2
+          exit 1
+
       - name: Create CodeDeploy deployment
         id: deploy
         env:
